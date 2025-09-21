@@ -7,7 +7,11 @@ from app.schemas.brain import (
 from app.schemas.chat import (
     ChatRequest,
     ChatResponse,
+    ChatResponsePayload,
+    LogChatCreate,
+    LogChatResponse,
     Message,
+    NotificationPayload,
     StreamResponse,
 )
 from app.schemas.graph import GraphState
@@ -21,7 +25,11 @@ __all__ = [
     "ComplexityLevel",
     "ChatRequest",
     "ChatResponse",
+    "ChatResponsePayload",
+    "LogChatCreate",
+    "LogChatResponse",
     "Message",
+    "NotificationPayload",
     "StreamResponse",
     "GraphState",
     "SynthesisResponse",

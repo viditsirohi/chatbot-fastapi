@@ -28,11 +28,16 @@ class GraphState(BaseModel):
     # Managed by the Brain - passed to the Hand
     needs_context: bool = Field(default=False, description="Whether context gathering is needed")
     brain_decision: Optional[Dict[str, Any]] = Field(default=None, description="Structured brain decision data")
+    response_strategy: Optional[str] = Field(default=None, description="Strategic summary for synthesizer")
 
     # Following come in chat request
-    profile: str = Field(..., description="The archetype profile of the user")
-    primary_archetype: str = Field(..., description="The primary archetype of the user")
-    secondary_archetype: str = Field(..., description="The secondary archetype of the user")
+    profile: str = Field(default="", description="The archetype profile of the user")
+    primary_archetype: str = Field(default="", description="The primary archetype of the user")
+    secondary_archetype: str = Field(default="", description="The secondary archetype of the user")
+    
+    # User authentication context
+    user_id: Optional[str] = Field(default=None, description="The authenticated user's ID")
+    access_token: Optional[str] = Field(default=None, description="The user's access token for tools")
 
     @field_validator("session_id")
     @classmethod

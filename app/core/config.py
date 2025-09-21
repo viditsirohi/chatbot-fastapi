@@ -131,7 +131,7 @@ class Settings:
         self.ENVIRONMENT = get_environment()
 
         # Application Settings
-        self.PROJECT_NAME = os.getenv("PROJECT_NAME", "FastAPI LangGraph Template")
+        self.PROJECT_NAME = os.getenv("PROJECT_NAME", "InSee")
         self.VERSION = os.getenv("VERSION", "1.0.0")
         self.DESCRIPTION = os.getenv(
             "DESCRIPTION", "A production-ready FastAPI template with LangGraph and Langfuse integration"

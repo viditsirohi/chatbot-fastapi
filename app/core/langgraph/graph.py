@@ -145,20 +145,34 @@ class LangGraphAgent:
         # Create structured LLM for brain decisions
         structured_llm = self.llm.with_structured_output(BrainDecision)
         
-        # Create proper prompt template that maintains chat context
+        # Create proper prompt template that maintains chat context and user archetype info
+        archetype_context = ""
+        if state.primary_archetype or state.secondary_archetype:
+            archetype_context = f"\n\nUSER ARCHETYPE CONTEXT:\n"
+            if state.primary_archetype:
+                archetype_context += f"Primary Archetype: {state.primary_archetype}\n"
+            if state.secondary_archetype:
+                archetype_context += f"Secondary Archetype: {state.secondary_archetype}\n"
+            if state.profile:
+                archetype_context += f"Profile: {state.profile}\n"
+        
+        # Extract previous response strategy for context continuity
+        previous_strategy = ""
+        for msg in reversed(state.messages):
+            if hasattr(msg, 'additional_kwargs') and msg.additional_kwargs:
+                response_strategy = msg.additional_kwargs.get('response_strategy')
+                if response_strategy:
+                    previous_strategy = f"\n\nPREVIOUS RESPONSE'S STRATEGY:\nThis was the strategy used for the bot's last response: {response_strategy}\n"
+                    break
+        
         brain_prompt = ChatPromptTemplate.from_messages([
-            ("system", BRAIN_PROMPT),
+            ("system", BRAIN_PROMPT + archetype_context + previous_strategy),
             ("placeholder", "{messages}")  # This preserves the full chat context
         ])
         
-        # Prepare the full conversation history
-        chat_messages = []
-        for msg in state.messages:
-            if hasattr(msg, 'role') and hasattr(msg, 'content'):
-                chat_messages.append((msg.role, msg.content))
-            elif hasattr(msg, 'content'):
-                # Handle messages without explicit role
-                chat_messages.append(("user", str(msg.content)))
+        # Prepare the full conversation history - USE THE MESSAGES DIRECTLY
+        # LangChain ChatPromptTemplate with placeholder handles message types correctly
+        chat_messages = state.messages
 
         llm_calls_num = 0
         max_retries = settings.MAX_LLM_CALL_RETRIES
@@ -173,27 +187,46 @@ class LangGraphAgent:
                         "messages": chat_messages
                     })
                     
+                    # Check if brain_decision is None (can happen with structured output)
+                    if brain_decision is None:
+                        raise LangChainException("LLM returned None for structured output")
+                    
                 # Create response message based on brain decision
                 if brain_decision.direct_response:
-                    # Brain provides direct response
-                    response_message = AIMessage(content=brain_decision.direct_response)
+                    # Brain provides direct response - include strategy for continuity
+                    response_message = AIMessage(
+                        content=brain_decision.direct_response,
+                        additional_kwargs={"response_strategy": brain_decision.response_strategy}
+                    )
                     generated_state = {"messages": [response_message]}
                 elif brain_decision.needs_tools:
-                    # Brain decides tools are needed - let the LLM make tool calls
+                    # Brain decides tools are needed - generate tool calls without content
+                    # Use the same prompt structure to ensure ToolMessage context is preserved
                     tool_response = await self.llm.ainvoke(
                         brain_prompt.format_messages(messages=chat_messages)
                     )
-                    generated_state = {"messages": [tool_response]}
+                    
+                    # Clean the tool response - remove content but keep tool_calls
+                    if hasattr(tool_response, 'tool_calls') and tool_response.tool_calls:
+                        clean_tool_message = AIMessage(
+                            content="",  # Empty content - only tool calls
+                            tool_calls=tool_response.tool_calls
+                        )
+                        generated_state = {"messages": [clean_tool_message]}
+                    else:
+                        # If no tool calls were generated, don't add any message
+                        generated_state = {"messages": []}
                 else:
-                    # Brain decides synthesis is needed
-                    response_message = AIMessage(
-                        content=f"Analysis: {brain_decision.reasoning}. Proceeding to synthesis."
-                    )
-                    generated_state = {"messages": [response_message]}
+                    # Brain decides synthesis is needed - DO NOT add message, let synthesizer handle it
+                    generated_state = {"messages": []}
                 
                 # Store structured decision for routing
                 generated_state["needs_context"] = brain_decision.needs_tools
                 generated_state["brain_decision"] = brain_decision.model_dump()
+                
+                # Store response strategy for synthesizer if provided
+                if brain_decision.response_strategy:
+                    generated_state["response_strategy"] = brain_decision.response_strategy
                     
                 logger.info(
                     "brain_analysis_completed",
@@ -266,7 +299,39 @@ class LangGraphAgent:
                     session_id=state.session_id
                 )
                 
-                tool_result = await self.tools_by_name[tool_call["name"]].ainvoke(tool_call["args"])
+                # Prepare tool arguments with user context for auth-required tools
+                if tool_call["name"] in [
+                    "fetch_user_commitments", 
+                    "fetch_user_journal_entries", 
+                    "set_user_commitment",
+                    "fetch_user_reminders",
+                    "set_user_reminder", 
+                    "update_user_reminder"
+                ]:
+                    logger.info(
+                        "preparing_user_context",
+                        tool_name=tool_call["name"],
+                        has_user_id=bool(state.user_id),
+                        has_access_token=bool(state.access_token),
+                        user_id_length=len(state.user_id) if state.user_id else 0,
+                        session_id=state.session_id
+                    )
+                    
+                    # Call tool with injected user context and tool-specific arguments
+                    tool_args = tool_call["args"].copy() if tool_call.get("args") else {}
+                    tool_args.update({
+                        "user_id": state.user_id,
+                        "access_token": state.access_token
+                    })
+                    
+                    # Add session_id as chat_id for commitment and reminder tools
+                    if tool_call["name"] in ["set_user_commitment", "set_user_reminder"]:
+                        tool_args["chat_id"] = state.session_id
+                    
+                    tool_result = await self.tools_by_name[tool_call["name"]].ainvoke(tool_args)
+                else:
+                    # For other tools, use normal invocation
+                    tool_result = await self.tools_by_name[tool_call["name"]].ainvoke(tool_call["args"])
                 outputs.append(
                     ToolMessage(
                         content=tool_result,
@@ -331,20 +396,21 @@ class LangGraphAgent:
             **self._get_model_kwargs(),
         ).with_structured_output(SynthesisResponse)
         
-        # Create proper prompt template that maintains chat context
+        # Create simplified prompt template that only uses strategy
         synthesis_prompt = ChatPromptTemplate.from_messages([
             ("system", SYNTHESIZER_PROMPT),
-            ("placeholder", "{messages}")  # This preserves the full chat context
+            ("user", "Original Question: {user_question}\n\nResponse Strategy: {response_strategy}")
         ])
         
-        # Prepare the full conversation history including any context/tool results
-        chat_messages = []
-        for msg in state.messages:
-            if hasattr(msg, 'role') and hasattr(msg, 'content'):
-                chat_messages.append((msg.role, msg.content))
-            elif hasattr(msg, 'content'):
-                # Handle tool messages and other types
-                chat_messages.append(("assistant", f"Context: {str(msg.content)}"))
+        # Extract the latest user question
+        user_question = "No specific question found"
+        for msg in reversed(state.messages):
+            if hasattr(msg, 'content') and hasattr(msg, 'role') and msg.role == 'user':
+                user_question = msg.content
+                break
+        
+        # Get the response strategy from brain
+        response_strategy = state.response_strategy or "No strategy provided"
 
         llm_calls_num = 0
         max_retries = settings.MAX_LLM_CALL_RETRIES
@@ -353,14 +419,23 @@ class LangGraphAgent:
         for attempt in range(max_retries):
             try:
                 with llm_inference_duration_seconds.labels(model=current_model).time():
-                    # Use structured chain with full context
+                    # Use structured chain with strategy only
                     chain = synthesis_prompt | synthesis_llm
                     synthesis_result: SynthesisResponse = await chain.ainvoke({
-                        "messages": chat_messages
+                        "user_question": user_question,
+                        "response_strategy": response_strategy
                     })
                     
-                    # Create final response message
-                    response_message = AIMessage(content=synthesis_result.response)
+                    # Check if synthesis_result is None (can happen with structured output)
+                    if synthesis_result is None:
+                        raise LangChainException("LLM returned None for structured output")
+                    
+                    # Create final response message with brain's strategy (not synthesizer's)
+                    brain_strategy = state.response_strategy or "No strategy provided"
+                    response_message = AIMessage(
+                        content=synthesis_result.response,
+                        additional_kwargs={"response_strategy": brain_strategy}
+                    )
                     generated_state = {"messages": [response_message]}
                     
                 logger.info(
@@ -368,8 +443,7 @@ class LangGraphAgent:
                     session_id=state.session_id,
                     llm_calls_num=llm_calls_num + 1,
                     model=current_model,
-                    confidence_level=synthesis_result.confidence_level,
-                    sources_count=len(synthesis_result.sources_used),
+                    has_strategy=bool(response_strategy and response_strategy != "No strategy provided"),
                     environment=settings.ENVIRONMENT.value,
                 )
                 return generated_state
@@ -416,7 +490,16 @@ class LangGraphAgent:
             
             # Check if tools are needed
             if brain_decision.get('needs_tools', False):
-                return "context_gathering"
+                # Verify we actually have tool calls before going to context gathering
+                last_message = state.messages[-1] if state.messages else None
+                if (last_message and 
+                    hasattr(last_message, 'tool_calls') and 
+                    last_message.tool_calls):
+                    return "context_gathering"
+                else:
+                    # Brain said it needs tools but didn't provide any - go to synthesis instead
+                    # This prevents infinite loops when brain can't decide on specific tools
+                    return "synthesizer"
             
             # Check if synthesis is needed
             if brain_decision.get('needs_synthesis', True):
@@ -474,7 +557,7 @@ class LangGraphAgent:
                         "__end__": END
                     },
                 )
-                graph_builder.add_edge("context_gathering", "synthesizer")
+                graph_builder.add_edge("context_gathering", "brain")
                 graph_builder.add_edge("synthesizer", END)
                 
                 # Set entry point
@@ -516,11 +599,12 @@ class LangGraphAgent:
         messages: list[Message],
         session_id: str,
         user_id: Optional[str] = None,
+        access_token: Optional[str] = None,
         profile: Optional[str] = None,
         primary_archetype: Optional[str] = None,
         secondary_archetype: Optional[str] = None,
-    ) -> list[dict]:
-        """Get a response from the LLM.
+    ) -> tuple[list[dict], dict]:
+        """Get a response from the LLM with notification payload extraction.
 
         Args:
             messages (list[Message]): The messages to send to the LLM.
@@ -528,7 +612,7 @@ class LangGraphAgent:
             user_id (Optional[str]): The user ID for Langfuse tracking.
 
         Returns:
-            list[dict]: The response from the LLM.
+            tuple[list[dict], dict]: The response messages and notification payload.
         """
         if self._graph is None:
             self._graph = await self.create_graph()
@@ -546,18 +630,33 @@ class LangGraphAgent:
             graph_state = {
                 "messages": dump_messages(messages), 
                 "session_id": session_id,
+                "user_id": user_id,
+                "access_token": access_token,
                 "profile": profile or "",
                 "primary_archetype": primary_archetype or "",
                 "secondary_archetype": secondary_archetype or "",
             }
+            
+            logger.info(
+                "graph_state_created",
+                session_id=session_id,
+                has_user_id=bool(user_id),
+                has_access_token=bool(access_token),
+                user_id=user_id,
+                access_token_length=len(access_token) if access_token else 0
+            )
+            
             response = await self._graph.ainvoke(graph_state, config)
-            return self.__process_messages(response["messages"])
+            processed_messages = self.__process_messages(response["messages"])
+            notification_payload = self.__extract_notification_payload(response["messages"])
+            return processed_messages, notification_payload
         except Exception as e:
             logger.error(f"Error getting response: {str(e)}")
             raise e
 
     async def get_stream_response(
         self, messages: list[Message], session_id: str, user_id: Optional[str] = None,
+        access_token: Optional[str] = None,
         profile: Optional[str] = None,
         primary_archetype: Optional[str] = None,
         secondary_archetype: Optional[str] = None,
@@ -587,6 +686,8 @@ class LangGraphAgent:
             graph_state = {
                 "messages": dump_messages(messages), 
                 "session_id": session_id,
+                "user_id": user_id,
+                "access_token": access_token,
                 "profile": profile or "",
                 "primary_archetype": primary_archetype or "",
                 "secondary_archetype": secondary_archetype or "",
@@ -622,13 +723,129 @@ class LangGraphAgent:
         return self.__process_messages(state.values["messages"]) if state.values else []
 
     def __process_messages(self, messages: list[BaseMessage]) -> list[Message]:
+        processed_messages = []
         openai_style_messages = convert_to_openai_messages(messages)
-        # keep just assistant and user messages
-        return [
-            Message(**message)
-            for message in openai_style_messages
-            if message["role"] in ["assistant", "user"] and message["content"]
+        
+        # keep just assistant and user messages with actual content (exclude tool-only messages)
+        for i, message in enumerate(openai_style_messages):
+            # For assistant messages, check if original message has response_strategy in additional_kwargs
+            if message.get('role') == 'assistant' and i < len(messages):
+                original_msg = messages[i]
+                if hasattr(original_msg, 'additional_kwargs') and original_msg.additional_kwargs:
+                    response_strategy = original_msg.additional_kwargs.get('response_strategy')
+                    if response_strategy:
+                        message['response_strategy'] = response_strategy
+            
+            processed_messages.append(Message(**message))
+        
+        return [msg for msg in processed_messages
+            if msg.role in ["assistant", "user"] and msg.content and msg.content.strip()
         ]
+    
+    def __extract_notification_payload(self, messages: list[BaseMessage]) -> dict:
+        """Extract notification payload from tool response messages.
+        
+        Args:
+            messages: List of messages to search for notification payloads
+            
+        Returns:
+            dict: Notification payload data or empty dict
+        """
+        import json
+        import re
+        
+        for message in reversed(messages):  # Check latest messages first
+            if hasattr(message, 'content') and message.content:
+                # Look for notification payload patterns
+                payload_match = re.search(r'\[NOTIFICATION_PAYLOAD: (.+?)\]', message.content)
+                if payload_match:
+                    try:
+                        payload_data = eval(payload_match.group(1))  # Safe eval of dict
+                        
+                        # Validate that this message actually confirms a reminder was set
+                        if self.__validate_payload_legitimacy(message.content, payload_data):
+                            logger.info(
+                                "notification_payload_extracted",
+                                payload=payload_data
+                            )
+                            return payload_data
+                        else:
+                            logger.info(
+                                "notification_payload_rejected",
+                                reason="Message does not confirm reminder was actually set"
+                            )
+                            return {}
+                    except Exception as e:
+                        logger.warning(
+                            "notification_payload_parse_error",
+                            error=str(e),
+                            raw_payload=payload_match.group(1)
+                        )
+        
+        return {}  # Return empty dict if no payload found
+    
+    def __validate_payload_legitimacy(self, message_content: str, payload_data: dict) -> bool:
+        """Validate that the message actually confirms a reminder was set.
+        
+        Args:
+            message_content: The full message content
+            payload_data: The extracted payload data
+            
+        Returns:
+            bool: True if payload is legitimate, False otherwise
+        """
+        # Check for confirmation keywords that indicate reminder was actually set
+        confirmation_patterns = [
+            r"✅.*Perfect.*reminder.*set",
+            r"✅.*reminder.*successfully.*set",
+            r"Reminder.*successfully.*set",
+            r"Perfect.*I've.*set.*up.*reminder",
+            r"reminder.*set.*up.*successfully"
+        ]
+        
+        import re
+
+        # Must have confirmation language in the message
+        has_confirmation = any(
+            re.search(pattern, message_content, re.IGNORECASE) 
+            for pattern in confirmation_patterns
+        )
+        
+        if not has_confirmation:
+            logger.info(
+                "payload_validation_failed",
+                reason="No confirmation language found",
+                message_preview=message_content[:100] + "..." if len(message_content) > 100 else message_content
+            )
+            return False
+        
+        # Must have required payload fields for a valid reminder
+        required_fields = ["should_schedule", "reminder_type"]
+        has_required_fields = all(field in payload_data for field in required_fields)
+        
+        if not has_required_fields:
+            logger.info(
+                "payload_validation_failed",
+                reason="Missing required fields",
+                payload=payload_data
+            )
+            return False
+        
+        # should_schedule must be True for legitimate reminders
+        if not payload_data.get("should_schedule", False):
+            logger.info(
+                "payload_validation_failed",
+                reason="should_schedule is not True",
+                payload=payload_data
+            )
+            return False
+        
+        logger.info(
+            "payload_validation_passed",
+            confirmation_found=has_confirmation,
+            payload=payload_data
+        )
+        return True
 
     async def clear_chat_history(self, session_id: str) -> None:
         """Clear all chat history for a given thread ID.

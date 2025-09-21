@@ -44,3 +44,7 @@ class BrainDecision(BaseModel):
         default=None,
         description="Guidance for what information to search for (when tools are needed)"
     )
+    
+    response_strategy: str = Field(
+        description="Simple strategy for what should happen next in this conversation, using easy words and short sentences"
+    )

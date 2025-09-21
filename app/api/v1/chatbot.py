@@ -5,6 +5,7 @@ streaming chat, message history management, and chat history clearing.
 """
 
 import json
+from datetime import datetime
 from typing import List
 
 from fastapi import (
@@ -14,6 +15,10 @@ from fastapi import (
     Request,
 )
 from fastapi.responses import StreamingResponse
+from fastapi.security import (
+    HTTPAuthorizationCredentials,
+    HTTPBearer,
+)
 
 from app.api.v1.auth import get_current_user
 from app.core.config import settings
@@ -27,9 +32,50 @@ from app.schemas.chat import (
     Message,
     StreamResponse,
 )
+from app.services.database import database_service
 
 router = APIRouter()
 agent = LangGraphAgent()
+security = HTTPBearer()
+
+
+def _validate_final_payload(notification_data: dict, messages: list) -> bool:
+    """Final validation to ensure payload should be included in response.
+    
+    Args:
+        notification_data: The notification payload data
+        messages: The response messages
+        
+    Returns:
+        bool: True if payload should be included, False otherwise
+    """
+    # Must have should_schedule = True
+    if not notification_data.get("should_schedule", False):
+        return False
+    
+    # Must have reminder_type
+    if not notification_data.get("reminder_type"):
+        return False
+    
+    # Must have either frequency or date (but not both)
+    has_frequency = bool(notification_data.get("frequency"))
+    has_date = bool(notification_data.get("date"))
+    
+    if not (has_frequency or has_date) or (has_frequency and has_date):
+        return False
+    
+    # Check that the latest message contains confirmation language
+    if messages:
+        latest_message = messages[-1] if isinstance(messages, list) else messages
+        content = latest_message.get("content", "") if isinstance(latest_message, dict) else getattr(latest_message, "content", "")
+        
+        confirmation_keywords = ["✅", "Perfect", "reminder", "set", "scheduled", "successfully"]
+        has_confirmation = any(keyword.lower() in content.lower() for keyword in confirmation_keywords)
+        
+        if not has_confirmation:
+            return False
+    
+    return True
 
 
 
@@ -39,6 +85,7 @@ async def chat(
     request: Request,
     chat_request: ChatRequest,
     user: dict = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
     """Process a chat request using LangGraph.
 
@@ -64,10 +111,11 @@ async def chat(
             secondary_archetype=chat_request.secondary_archetype,
         )
 
-        result = await agent.get_response(
+        messages, notification_data = await agent.get_response(
             chat_request.messages, 
             chat_request.session_id, 
             user_id=user["id"],
+            access_token=credentials.credentials,
             profile=chat_request.profile,
             primary_archetype=chat_request.primary_archetype,
             secondary_archetype=chat_request.secondary_archetype,
@@ -75,7 +123,48 @@ async def chat(
 
         logger.info("chat_request_processed", session_id=chat_request.session_id, user_id=user["id"])
 
-        return ChatResponse(messages=result)
+        # Create response with notification payload if available
+        from uuid import UUID
+
+        from app.schemas.chat import (
+            ChatResponsePayload,
+            NotificationPayload,
+        )
+        
+        payload = ChatResponsePayload()
+        
+        # Double-check payload legitimacy before including in response
+        if notification_data and _validate_final_payload(notification_data, messages):
+            payload.notification = NotificationPayload(**notification_data)
+            logger.info("notification_payload_included", payload=notification_data)
+        else:
+            if notification_data:
+                logger.info("notification_payload_excluded", reason="Failed final validation")
+
+        # Prepare response
+        response = ChatResponse(messages=messages, payload=payload)
+        
+        # Log chat interaction to log_chat table
+        try:
+            # Create combined messages list (request + response)
+            # all_messages = [msg.model_dump() for msg in chat_request.messages]
+            all_messages = [msg.model_dump() for msg in messages]
+            # Add all response messages
+            # all_messages.extend([])
+            
+            # Log the interaction (this runs asynchronously and won't block the response)
+            await database_service.log_chat_interaction(
+                session_id=chat_request.session_id,
+                user_id=UUID(user["id"]),
+                chat_data=all_messages,
+                summary=None,  # Could be enhanced later with AI-generated summaries
+                access_token=credentials.credentials
+            )
+        except Exception as e:
+            # Log error but don't fail the main request
+            logger.error("chat_logging_failed", session_id=chat_request.session_id, user_id=user["id"], error=str(e))
+        
+        return response
     except Exception as e:
         logger.error("chat_request_failed", session_id=chat_request.session_id, user_id=user["id"], error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -87,6 +176,7 @@ async def chat_stream(
     request: Request,
     chat_request: ChatRequest,
     user: dict = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
 ):
     """Process a chat request using LangGraph with streaming response.
 
@@ -128,6 +218,7 @@ async def chat_stream(
                         chat_request.messages, 
                         chat_request.session_id, 
                         user_id=user["id"],
+                        access_token=credentials.credentials,
                         profile=chat_request.profile,
                         primary_archetype=chat_request.primary_archetype,
                         secondary_archetype=chat_request.secondary_archetype,
@@ -135,6 +226,31 @@ async def chat_stream(
                         full_response += chunk
                         response = StreamResponse(content=chunk, done=False)
                         yield f"data: {json.dumps(response.model_dump())}\n\n"
+
+                # Log streaming chat interaction to log_chat table
+                try:
+                    from uuid import UUID
+
+                    # Create combined messages list (request + response)
+                    all_messages = [msg.model_dump() for msg in chat_request.messages]
+                    # Add the assistant's response
+                    all_messages.append({
+                        "role": "assistant",
+                        "content": full_response,
+                        "response_strategy": None
+                    })
+                    
+                    # Log the interaction (this runs asynchronously and won't block the response)
+                    await database_service.log_chat_interaction(
+                        session_id=chat_request.session_id,
+                        user_id=UUID(user["id"]),
+                        chat_data=all_messages,
+                        summary=None,  # Could be enhanced later with AI-generated summaries
+                        access_token=credentials.credentials
+                    )
+                except Exception as log_error:
+                    # Log error but don't fail the main request
+                    logger.error("stream_chat_logging_failed", session_id=chat_request.session_id, user_id=user["id"], error=str(log_error))
 
                 # Send final message indicating completion
                 final_response = StreamResponse(content="", done=True)

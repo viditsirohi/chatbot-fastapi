@@ -58,7 +58,6 @@ class SupabaseAuth:
         try:
             # Use the token directly - JWT tokens should not be HTML sanitized
             token = access_token.strip()
-            print(f"Token: {token}")
             
             # Get user from Supabase using the JWT token directly
             user_response = self.supabase.auth.get_user(token)
