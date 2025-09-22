@@ -199,6 +199,10 @@ async def update_user_reminder(
     Returns:
         str: Success message with confirmation or error message
     """
+    # Validate required parameters
+    if not reminder_id or not reminder_id.strip():
+        return "Error: Reminder ID is required and cannot be empty"
+    
     return await _reminder_manager.update_reminder(
         user_id=user_id,
         access_token=access_token,

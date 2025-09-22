@@ -235,10 +235,14 @@ async def create_user_commitment(
     Returns:
         str: Success message with confirmation or error message (including limit violations)
     """
+    # Validate required parameters
+    if not commitment_text or not commitment_text.strip():
+        return "Error: Commitment text is required and cannot be empty"
+    
     return await _enhanced_commitment_manager.create_commitment(
         user_id=user_id,
         access_token=access_token,
-        commitment_text=commitment_text,
+        commitment_text=commitment_text.strip(),
         chat_id=chat_id,
         reminder_set=reminder_set
     )
@@ -262,8 +266,12 @@ async def complete_user_commitment(
     Returns:
         str: Success message with celebration or error message
     """
+    # Validate required parameters
+    if not commitment_id or not commitment_id.strip():
+        return "Error: Commitment ID is required and cannot be empty"
+    
     return await _enhanced_commitment_manager.complete_commitment(
         user_id=user_id,
         access_token=access_token,
-        commitment_id=commitment_id
+        commitment_id=commitment_id.strip()
     )

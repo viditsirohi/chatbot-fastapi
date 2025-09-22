@@ -302,11 +302,16 @@ class LangGraphAgent:
                 # Prepare tool arguments with user context for auth-required tools
                 if tool_call["name"] in [
                     "fetch_user_commitments", 
+                    "fetch_user_commitments_enhanced",
+                    "create_user_commitment",
+                    "complete_user_commitment",
                     "fetch_user_journal_entries", 
                     "set_user_commitment",
                     "fetch_user_reminders",
                     "set_user_reminder", 
-                    "update_user_reminder"
+                    "update_user_reminder",
+                    "offer_commitment_reminder",
+                    "set_commitment_reminder"
                 ]:
                     logger.info(
                         "preparing_user_context",
@@ -728,6 +733,10 @@ class LangGraphAgent:
         
         # keep just assistant and user messages with actual content (exclude tool-only messages)
         for i, message in enumerate(openai_style_messages):
+            # Skip messages with empty or whitespace-only content before creating Message objects
+            if not message.get('content') or not message.get('content').strip():
+                continue
+                
             # For assistant messages, check if original message has response_strategy in additional_kwargs
             if message.get('role') == 'assistant' and i < len(messages):
                 original_msg = messages[i]
@@ -736,11 +745,11 @@ class LangGraphAgent:
                     if response_strategy:
                         message['response_strategy'] = response_strategy
             
-            processed_messages.append(Message(**message))
+            # Only create Message objects for messages with content that passes validation
+            if message.get('role') in ["assistant", "user"] and message.get('content') and message.get('content').strip():
+                processed_messages.append(Message(**message))
         
-        return [msg for msg in processed_messages
-            if msg.role in ["assistant", "user"] and msg.content and msg.content.strip()
-        ]
+        return processed_messages
     
     def __extract_notification_payload(self, messages: list[BaseMessage]) -> dict:
         """Extract notification payload from tool response messages.

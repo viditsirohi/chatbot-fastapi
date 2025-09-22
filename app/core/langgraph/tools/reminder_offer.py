@@ -44,6 +44,12 @@ async def offer_commitment_reminder(
     Returns:
         str: Reminder offer message with options
     """
+    # Validate required parameters
+    if not commitment_text or not commitment_text.strip():
+        return "Error: Commitment text is required and cannot be empty"
+    if not commitment_id or not commitment_id.strip():
+        return "Error: Commitment ID is required and cannot be empty"
+    
     logger.info(
         "reminder_offer_initiated",
         user_id=user_id,
@@ -96,6 +102,12 @@ async def set_commitment_reminder(
     Returns:
         str: Success message with notification payload info
     """
+    # Validate required parameters
+    if not reminder_type or not reminder_type.strip():
+        return "Error: Reminder type is required and cannot be empty"
+    if not commitment_id or not commitment_id.strip():
+        return "Error: Commitment ID is required and cannot be empty"
+    
     try:
         # Validate input
         if reminder_type not in ["frequency", "date"]:
@@ -193,6 +205,9 @@ async def decline_commitment_reminder(
     Returns:
         str: Acknowledgment message
     """
+    # Validate required parameters
+    if not commitment_id or not commitment_id.strip():
+        return "Error: Commitment ID is required and cannot be empty"
     logger.info(
         "commitment_reminder_declined",
         user_id=user_id,
