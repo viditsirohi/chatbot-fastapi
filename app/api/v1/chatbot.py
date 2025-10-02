@@ -33,6 +33,7 @@ from app.schemas.chat import (
     StreamResponse,
 )
 from app.services.database import database_service
+from app.utils.error_handling import handle_api_error
 
 router = APIRouter()
 agent = LangGraphAgent()
@@ -167,7 +168,13 @@ async def chat(
         return response
     except Exception as e:
         logger.error("chat_request_failed", session_id=chat_request.session_id, user_id=user["id"], error=str(e), exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        user_friendly_error = handle_api_error(
+            error=e,
+            endpoint="chat",
+            user_id=user["id"],
+            session_id=chat_request.session_id
+        )
+        raise HTTPException(status_code=500, detail=user_friendly_error)
 
 
 @router.post("/chat/stream")
@@ -264,7 +271,13 @@ async def chat_stream(
                     error=str(e),
                     exc_info=True,
                 )
-                error_response = StreamResponse(content=str(e), done=True)
+                user_friendly_error = handle_api_error(
+                    error=e,
+                    endpoint="chat_stream_generator",
+                    user_id=user["id"],
+                    session_id=chat_request.session_id
+                )
+                error_response = StreamResponse(content=user_friendly_error, done=True)
                 yield f"data: {json.dumps(error_response.model_dump())}\n\n"
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
@@ -277,7 +290,13 @@ async def chat_stream(
             error=str(e),
             exc_info=True,
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        user_friendly_error = handle_api_error(
+            error=e,
+            endpoint="chat_stream",
+            user_id=user["id"],
+            session_id=chat_request.session_id
+        )
+        raise HTTPException(status_code=500, detail=user_friendly_error)
 
 
 @router.get("/messages", response_model=ChatResponse)

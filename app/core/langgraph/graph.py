@@ -50,6 +50,7 @@ from app.utils import (
     dump_messages,
     prepare_messages,
 )
+from app.utils.error_handling import handle_tool_error
 
 
 class LangGraphAgent:
@@ -306,12 +307,12 @@ class LangGraphAgent:
                     "create_user_commitment",
                     "complete_user_commitment",
                     "fetch_user_journal_entries", 
-                    "set_user_commitment",
                     "fetch_user_reminders",
                     "set_user_reminder", 
                     "update_user_reminder",
                     "offer_commitment_reminder",
-                    "set_commitment_reminder"
+                    "set_commitment_reminder",
+                    "decline_commitment_reminder"
                 ]:
                     logger.info(
                         "preparing_user_context",
@@ -329,8 +330,13 @@ class LangGraphAgent:
                         "access_token": state.access_token
                     })
                     
-                    # Add session_id as chat_id for commitment and reminder tools
-                    if tool_call["name"] in ["set_user_commitment", "set_user_reminder"]:
+                    # Add session_id as chat_id for commitment and reminder tools that accept chat_id
+                    if tool_call["name"] in [
+                        "create_user_commitment",
+                        "set_user_reminder", 
+                        "offer_commitment_reminder",
+                        "set_commitment_reminder"
+                    ]:
                         tool_args["chat_id"] = state.session_id
                     
                     tool_result = await self.tools_by_name[tool_call["name"]].ainvoke(tool_args)
@@ -357,9 +363,16 @@ class LangGraphAgent:
                     error=str(e),
                     session_id=state.session_id
                 )
+                # Use user-friendly error message for tool failures
+                user_friendly_error = handle_tool_error(
+                    error=e,
+                    tool_name=tool_call["name"],
+                    user_id=state.user_id,
+                    session_id=state.session_id
+                )
                 outputs.append(
                     ToolMessage(
-                        content=f"Error executing {tool_call['name']}: {str(e)}",
+                        content=user_friendly_error,
                         name=tool_call["name"],
                         tool_call_id=tool_call["id"],
                     )

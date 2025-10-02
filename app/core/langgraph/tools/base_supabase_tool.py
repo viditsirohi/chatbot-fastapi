@@ -23,6 +23,10 @@ from supabase import (
 )
 
 from app.core.logging import logger
+from app.utils.error_handling import (
+    get_user_friendly_error_message,
+    is_user_facing_error,
+)
 from app.utils.supabase_auth import supabase_auth
 
 
@@ -62,7 +66,11 @@ class BaseSupabaseTool(ABC):
                 user_id=user_id,
                 has_access_token=bool(access_token)
             )
-            return "Error: User authentication context not available"
+            return get_user_friendly_error_message(
+                "User authentication context not available",
+                context=self.tool_name,
+                user_id=user_id
+            )
         
         # Token is already verified at the API level by get_current_user dependency
         # No need to re-verify here - just log that we have the required context
@@ -149,7 +157,11 @@ class BaseSupabaseTool(ABC):
             # Create authenticated client
             supabase_client = self._create_authenticated_client(access_token)
             if not supabase_client:
-                return "Error: Supabase credentials not properly configured"
+                return get_user_friendly_error_message(
+                    "Supabase credentials not properly configured",
+                    context=self.tool_name,
+                    user_id=user_id
+                )
             
             # Execute the query
             result = self._build_query(supabase_client, user_id)
@@ -173,13 +185,16 @@ class BaseSupabaseTool(ABC):
             return json.dumps(formatted_data, indent=2)
             
         except Exception as e:
-            error_message = f"Error fetching {self.table_name.replace('_', ' ')}: {str(e)}"
             logger.error(
                 f"{self.tool_name}_error",
                 user_id=user_id if user_id else 'unknown',
                 error=str(e)
             )
-            return error_message
+            return get_user_friendly_error_message(
+                error=e,
+                context=self.tool_name,
+                user_id=user_id
+            )
     
     async def insert_data(
         self, 
@@ -214,7 +229,11 @@ class BaseSupabaseTool(ABC):
             # Create authenticated client
             supabase_client = self._create_authenticated_client(access_token)
             if not supabase_client:
-                return "Error: Supabase credentials not properly configured"
+                return get_user_friendly_error_message(
+                    "Supabase credentials not properly configured",
+                    context=self.tool_name,
+                    user_id=user_id
+                )
             
             # Ensure user_id is set
             data["user_id"] = user_id
@@ -231,16 +250,23 @@ class BaseSupabaseTool(ABC):
                 return self._format_insert_success(result.data[0], data)
             else:
                 logger.error(f"{self.tool_name}_no_data_returned", user_id=user_id)
-                return f"Error: Failed to create {self.table_name.replace('_', ' ')} - no data returned"
+                return get_user_friendly_error_message(
+                    f"Failed to create {self.table_name.replace('_', ' ')} - no data returned",
+                    context=self.tool_name,
+                    user_id=user_id
+                )
             
         except Exception as e:
-            error_message = f"Error creating {self.table_name.replace('_', ' ')}: {str(e)}"
             logger.error(
                 f"{self.tool_name}_insert_error",
                 user_id=user_id if user_id else 'unknown',
                 error=str(e)
             )
-            return error_message
+            return get_user_friendly_error_message(
+                error=e,
+                context=self.tool_name,
+                user_id=user_id
+            )
     
     async def update_data(
         self, 
@@ -269,10 +295,18 @@ class BaseSupabaseTool(ABC):
             # Create authenticated client
             supabase_client = self._create_authenticated_client(access_token)
             if not supabase_client:
-                return "Error: Supabase credentials not properly configured"
+                return get_user_friendly_error_message(
+                    "Supabase credentials not properly configured",
+                    context=self.tool_name,
+                    user_id=user_id
+                )
             
             if not update_data:
-                return "Error: No update data provided"
+                return get_user_friendly_error_message(
+                    "No update data provided",
+                    context=self.tool_name,
+                    user_id=user_id
+                )
             
             # Update record in database
             result = supabase_client.table(self.table_name).update(update_data).eq("id", record_id).eq("user_id", user_id).execute()
@@ -289,13 +323,16 @@ class BaseSupabaseTool(ABC):
                 return f"No {self.table_name.replace('_', ' ')} found to update or no changes made"
             
         except Exception as e:
-            error_message = f"Error updating {self.table_name.replace('_', ' ')}: {str(e)}"
             logger.error(
                 f"{self.tool_name}_update_error",
                 user_id=user_id if user_id else 'unknown',
                 error=str(e)
             )
-            return error_message
+            return get_user_friendly_error_message(
+                error=e,
+                context=self.tool_name,
+                user_id=user_id
+            )
     
     def _format_insert_success(self, inserted_data: Dict[str, Any], original_data: Dict[str, Any]) -> str:
         """Format success message for insert operations.

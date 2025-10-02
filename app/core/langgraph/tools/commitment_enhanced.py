@@ -18,6 +18,10 @@ from langchain_core.tools import tool
 from supabase import Client
 
 from app.core.logging import logger
+from app.utils.error_handling import (
+    get_user_friendly_error_message,
+    is_user_facing_error,
+)
 
 from .base_supabase_tool import BaseSupabaseTool
 
@@ -78,7 +82,11 @@ class EnhancedCommitmentManager(BaseSupabaseTool):
             # Create authenticated client
             supabase_client = self._create_authenticated_client(access_token)
             if not supabase_client:
-                return "Error: Supabase credentials not properly configured"
+                return get_user_friendly_error_message(
+                    "Supabase credentials not properly configured",
+                    context=self.tool_name,
+                    user_id=user_id
+                )
             
             # Count active commitments
             result = supabase_client.table("log_commitment").select("id").eq("user_id", user_id).eq("done", False).execute()
@@ -102,7 +110,15 @@ class EnhancedCommitmentManager(BaseSupabaseTool):
                 user_id=user_id,
                 error=str(e)
             )
-            return f"Error validating commitment limit: {str(e)}"
+            # Check if this is a user-facing error message
+            if is_user_facing_error(str(e)):
+                return str(e)
+            else:
+                return get_user_friendly_error_message(
+                    error=e,
+                    context=self.tool_name,
+                    user_id=user_id
+                )
     
     async def create_commitment(
         self, 
@@ -237,7 +253,7 @@ async def create_user_commitment(
     """
     # Validate required parameters
     if not commitment_text or not commitment_text.strip():
-        return "Error: Commitment text is required and cannot be empty"
+        return "Please provide the commitment text you'd like to set."
     
     return await _enhanced_commitment_manager.create_commitment(
         user_id=user_id,
@@ -266,9 +282,13 @@ async def complete_user_commitment(
     Returns:
         str: Success message with celebration or error message
     """
-    # Validate required parameters
+    # Validate required parameters  
     if not commitment_id or not commitment_id.strip():
-        return "Error: Commitment ID is required and cannot be empty"
+        return get_user_friendly_error_message(
+            "Commitment ID is required and cannot be empty",
+            context="complete_user_commitment",
+            user_id=user_id
+        )
     
     return await _enhanced_commitment_manager.complete_commitment(
         user_id=user_id,

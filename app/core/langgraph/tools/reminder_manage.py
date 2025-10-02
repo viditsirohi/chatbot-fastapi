@@ -16,6 +16,7 @@ from langchain_core.tools import tool
 from supabase import Client
 
 from app.core.logging import logger
+from app.utils.error_handling import get_user_friendly_error_message
 
 from .base_supabase_tool import BaseSupabaseTool
 from .reminder_validation import (
@@ -78,7 +79,8 @@ class ReminderManager(BaseSupabaseTool):
         validation_error = validate_reminder_data(normalized_frequency, date)
         
         if validation_error:
-            return f"Error: {validation_error}"
+            # Validation errors from reminder_validation are already user-friendly
+            return validation_error
         
         reminder_data = {}
         
@@ -201,7 +203,11 @@ async def update_user_reminder(
     """
     # Validate required parameters
     if not reminder_id or not reminder_id.strip():
-        return "Error: Reminder ID is required and cannot be empty"
+        return get_user_friendly_error_message(
+            "Reminder ID is required and cannot be empty",
+            context="update_user_reminder",
+            user_id=user_id
+        )
     
     return await _reminder_manager.update_reminder(
         user_id=user_id,

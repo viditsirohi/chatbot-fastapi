@@ -1,3 +1,8 @@
+# TODO
+
+- [x] when logging chat, messages get repeated. On every user response, all messages are added in the log again
+- [ ] fix tool calls. Tool names are mismatched and some props are missing on tool calls. Make sure to understand how tool call node is working and then see all the available tools and their props and fix the tool calls.
+
 # InSee Agent
 
 A production-ready FastAPI template for building AI agent applications with LangGraph integration. This template provides a robust foundation for building scalable, secure, and maintainable AI agent services.

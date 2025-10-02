@@ -13,6 +13,10 @@ from langchain_core.tools import tool
 
 from app.core.logging import logger
 from app.schemas.chat import NotificationPayload
+from app.utils.error_handling import (
+    get_user_friendly_error_message,
+    is_user_facing_error,
+)
 
 from .reminder_manage import _reminder_manager
 from .reminder_validation import (
@@ -46,9 +50,17 @@ async def offer_commitment_reminder(
     """
     # Validate required parameters
     if not commitment_text or not commitment_text.strip():
-        return "Error: Commitment text is required and cannot be empty"
+        return get_user_friendly_error_message(
+            "Commitment text is required and cannot be empty",
+            context="offer_commitment_reminder",
+            user_id=user_id
+        )
     if not commitment_id or not commitment_id.strip():
-        return "Error: Commitment ID is required and cannot be empty"
+        return get_user_friendly_error_message(
+            "Commitment ID is required and cannot be empty", 
+            context="offer_commitment_reminder",
+            user_id=user_id
+        )
     
     logger.info(
         "reminder_offer_initiated",
@@ -104,30 +116,55 @@ async def set_commitment_reminder(
     """
     # Validate required parameters
     if not reminder_type or not reminder_type.strip():
-        return "Error: Reminder type is required and cannot be empty"
+        return get_user_friendly_error_message(
+            "Reminder type is required and cannot be empty",
+            context="set_commitment_reminder",
+            user_id=user_id
+        )
     if not commitment_id or not commitment_id.strip():
-        return "Error: Commitment ID is required and cannot be empty"
+        return get_user_friendly_error_message(
+            "Commitment ID is required and cannot be empty",
+            context="set_commitment_reminder", 
+            user_id=user_id
+        )
     
     try:
         # Validate input
         if reminder_type not in ["frequency", "date"]:
-            return "Error: Reminder type must be either 'frequency' or 'date'"
+            return get_user_friendly_error_message(
+                "Reminder type must be either 'frequency' or 'date'",
+                context="set_commitment_reminder",
+                user_id=user_id
+            )
         
         if reminder_type == "frequency" and not frequency:
-            return "Error: Frequency is required when reminder_type is 'frequency'"
+            return get_user_friendly_error_message(
+                "Frequency is required when reminder_type is 'frequency'",
+                context="set_commitment_reminder",
+                user_id=user_id
+            )
         
         if reminder_type == "date" and not date:
-            return "Error: Date is required when reminder_type is 'date'"
+            return get_user_friendly_error_message(
+                "Date is required when reminder_type is 'date'",
+                context="set_commitment_reminder",
+                user_id=user_id
+            )
         
         if reminder_type == "frequency" and reminder_type == "date":
-            return "Error: Cannot set both frequency and date - choose one"
+            return get_user_friendly_error_message(
+                "Cannot set both frequency and date - choose one",
+                context="set_commitment_reminder",
+                user_id=user_id
+            )
         
         # Normalize and validate frequency/date values
         normalized_frequency = normalize_frequency(frequency) if frequency else None
         validation_error = validate_reminder_data(normalized_frequency, date)
         
         if validation_error:
-            return f"Error: {validation_error}"
+            # Validation errors from reminder_validation are already user-friendly
+            return validation_error
         
         # Set reminder in database using existing functionality with normalized values
         result = await _reminder_manager.set_reminder(
@@ -181,14 +218,21 @@ async def set_commitment_reminder(
         return success_msg
         
     except Exception as e:
-        error_message = f"Error setting commitment reminder: {str(e)}"
         logger.error(
             "commitment_reminder_error",
             user_id=user_id if user_id else 'unknown',
             commitment_id=commitment_id,
             error=str(e)
         )
-        return error_message
+        # Check if this is a user-facing error message
+        if is_user_facing_error(str(e)):
+            return str(e)
+        else:
+            return get_user_friendly_error_message(
+                error=e,
+                context="set_commitment_reminder",
+                user_id=user_id
+            )
 
 
 @tool
@@ -207,7 +251,11 @@ async def decline_commitment_reminder(
     """
     # Validate required parameters
     if not commitment_id or not commitment_id.strip():
-        return "Error: Commitment ID is required and cannot be empty"
+        return get_user_friendly_error_message(
+            "Commitment ID is required and cannot be empty",
+            context="decline_commitment_reminder",
+            user_id=user_id
+        )
     logger.info(
         "commitment_reminder_declined",
         user_id=user_id,
