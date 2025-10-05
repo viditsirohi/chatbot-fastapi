@@ -107,15 +107,44 @@ class LangGraphAgent:
                 # Configure pool size based on environment
                 max_size = settings.POSTGRES_POOL_SIZE
 
+                # Configure SSL settings for secure connection
+                connection_kwargs = {
+                    "autocommit": True,
+                    "connect_timeout": 10,
+                    "prepare_threshold": None,
+                }
+
+                # Add SSL configuration for production and hosted databases
+                if settings.ENVIRONMENT == Environment.PRODUCTION:
+                    import os
+
+                    # Use configurable SSL certificate path
+                    ssl_cert_path = os.path.join(os.getcwd(), settings.POSTGRES_SSL_CERT_PATH)
+                    
+                    # Check if certificate file exists
+                    if os.path.exists(ssl_cert_path):
+                        connection_kwargs.update({
+                            "sslmode": settings.POSTGRES_SSL_MODE,
+                            "sslrootcert": ssl_cert_path,
+                        })
+                        logger.info("ssl_certificate_configured", cert_path=ssl_cert_path, environment=settings.ENVIRONMENT.value)
+                    else:
+                        # Fallback to require SSL without specific certificate
+                        connection_kwargs.update({
+                            "sslmode": settings.POSTGRES_SSL_MODE,
+                        })
+                        logger.warning("ssl_certificate_not_found", expected_path=ssl_cert_path, environment=settings.ENVIRONMENT.value)
+                elif settings.ENVIRONMENT == Environment.STAGING:
+                    # Also use SSL for staging
+                    connection_kwargs.update({
+                        "sslmode": settings.POSTGRES_SSL_MODE,
+                    })
+
                 self._connection_pool = AsyncConnectionPool(
                     settings.POSTGRES_URL,
                     open=False,
                     max_size=max_size,
-                    kwargs={
-                        "autocommit": True,
-                        "connect_timeout": 5,
-                        "prepare_threshold": None,
-                    },
+                    kwargs=connection_kwargs,
                 )
                 await self._connection_pool.open()
                 logger.info("connection_pool_created", max_size=max_size, environment=settings.ENVIRONMENT.value)
